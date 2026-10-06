@@ -17,8 +17,8 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from download import download, is_url  # noqa: E402
 from frames import (  # noqa: E402
-    MAX_FPS, auto_fps, auto_fps_focus, extract, extract_scene_change,
-    format_time, get_metadata, parse_time, select_hero_frames,
+    MAX_FPS, auto_fps, auto_fps_focus, detect_scene_times, extract, extract_scene_change,
+    format_time, get_metadata, merge_bursts, parse_time, select_hero_frames,
 )
 from hook import analyse_hook  # noqa: E402
 from pacing import compute_pacing  # noqa: E402
@@ -117,8 +117,17 @@ def main() -> int:
     print(f"[watch] extracting ~{target} frames at {fps:.3f} fps over {scope}…", file=sys.stderr)
 
     use_scene = (not args.no_scene_change) and not focused and args.fps is None
+    all_scene_times: list[float] = []
     if use_scene:
         print("[watch] extracting scene-change frames (one per shot)…", file=sys.stderr)
+        all_scene_times = merge_bursts(detect_scene_times(
+            video_path, 0.3, start_seconds=start_sec, end_seconds=end_sec,
+        ))
+        chapter_starts = tuple(
+            float(chapter["start_time"])
+            for chapter in (dl.get("info") or {}).get("chapters") or []
+            if chapter.get("start_time") is not None
+        )
         frames = extract_scene_change(
             video_path,
             work / "frames",
@@ -128,6 +137,8 @@ def main() -> int:
             uniform_fallback_min=10,
             start_seconds=start_sec,
             end_seconds=end_sec,
+            scene_times=all_scene_times,
+            anchors=chapter_starts,
         )
         sampling_mode = (
             "scene-change" if frames and frames[0].get("source") == "scene-change"
@@ -145,11 +156,8 @@ def main() -> int:
         )
         sampling_mode = "uniform"
 
-    # Pacing: derive scene-change timestamps from frame metadata.
-    if sampling_mode == "scene-change":
-        scene_times = [f["timestamp_seconds"] for f in frames]
-    else:
-        scene_times = []
+    # Pacing uses every detected cut, not just the frames kept for the budget.
+    scene_times = all_scene_times if sampling_mode == "scene-change" else []
     pacing = compute_pacing(
         scene_times=scene_times,
         video_duration=effective_duration,
