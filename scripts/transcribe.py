@@ -44,7 +44,7 @@ def parse_vtt(path: str) -> list[dict]:
             i += 1
 
         cue_lines: list[str] = []
-        while i < len(lines) and lines[i].strip():
+        while i < len(lines) and lines[i].strip() and not _starts_next_cue(lines, i):
             cleaned = TAG_RE.sub("", lines[i]).strip()
             if cleaned:
                 cue_lines.append(cleaned)
@@ -59,6 +59,17 @@ def parse_vtt(path: str) -> list[dict]:
         i += 1
 
     return _dedupe(segments)
+
+
+def _starts_next_cue(lines: list[str], index: int) -> bool:
+    """True when lines[index] is the next cue's timing line or its identifier.
+
+    Guards cue text against running into the following cue when a separator
+    line holds only whitespace.
+    """
+    if TS_RE.match(lines[index]):
+        return True
+    return index + 1 < len(lines) and bool(TS_RE.match(lines[index + 1]))
 
 
 def _drop_rolled_line(previous_lines: list[str], cue_lines: list[str]) -> list[str]:

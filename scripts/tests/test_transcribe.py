@@ -78,6 +78,17 @@ class TestParseVtt(unittest.TestCase):
         text = self._parse(MANUAL_VTT)
         self.assertEqual(text, "it's easy to think that that takes a ton of skills.")
 
+    def test_empty_cue_with_spaced_separator_does_not_swallow_next_cue(self):
+        body = (
+            "WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\n \n"
+            "2\n00:00:02.000 --> 00:00:03.000\nSecond cue\n"
+        )
+        path = self.tmp / "captions.vtt"
+        path.write_text(body, encoding="utf-8")
+        self.assertEqual(
+            parse_vtt(str(path)), [{"start": 2.0, "end": 3.0, "text": "Second cue"}],
+        )
+
     def test_rolling_segments_keep_start_times(self):
         path = self.tmp / "captions.vtt"
         path.write_text(ROLLING_AUTO_VTT, encoding="utf-8")
