@@ -2,7 +2,7 @@
 
 All notable changes to `/watch` are documented here.
 
-## [0.2.0+hxrmx.1] — 2026-10-06 (fork: HxrmxStudio/claude-watch)
+## [0.2.0+hxrmx.2] — 2026-10-06 (fork: HxrmxStudio/claude-watch)
 
 Fixes and features proposed upstream as separate PRs; this fork carries them until they land.
 
@@ -11,6 +11,7 @@ Fixes and features proposed upstream as separate PRs; this fork carries them unt
 - Caption selection preferred auto tracks over manual ones by file name; manual tracks now come from `info.json`, then the original-language `-orig` auto track.
 - Rolling YouTube auto-captions doubled the transcript; the rolled-over line is dropped, and the first cue is no longer lost.
 - A failed download names a stale yt-dlp (over 60 days) and how to update it.
+- Hardening from review: cue text stops at the next cue's id or timing line; cuts outside the analysed range are ignored; when anchors exceed the budget, frames are spread instead of truncating the end; unreadable whisper.cpp JSON falls back instead of aborting.
 
 ### Added
 - Content-change sampling for screencasts, which rarely cut: a frame when enough of the screen changed since the last kept one, fitted to the budget.
