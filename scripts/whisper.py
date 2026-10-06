@@ -274,6 +274,21 @@ def _retry_after(exc: urllib.error.HTTPError) -> float | None:
         return None
 
 
+def _seconds(value: object) -> float:
+    """A finite time in seconds from an API value, or SystemExit.
+
+    Callers only catch SystemExit, so a malformed response must surface as
+    one instead of a ValueError or a NaN timestamp in the transcript.
+    """
+    try:
+        seconds = float(value or 0.0)
+    except (ValueError, TypeError, ArithmeticError) as exc:
+        raise SystemExit(f"Whisper returned an invalid timestamp: {value!r}") from exc
+    if not math.isfinite(seconds):
+        raise SystemExit(f"Whisper returned a non-finite timestamp: {value!r}")
+    return seconds
+
+
 def _segments_from_response(data: dict) -> list[dict]:
     """Convert Whisper verbose_json into our {start, end, text} segment format."""
     out: list[dict] = []
@@ -282,8 +297,8 @@ def _segments_from_response(data: dict) -> list[dict]:
         if not text:
             continue
         out.append({
-            "start": round(float(seg.get("start") or 0.0), 2),
-            "end": round(float(seg.get("end") or 0.0), 2),
+            "start": round(_seconds(seg.get("start")), 2),
+            "end": round(_seconds(seg.get("end")), 2),
             "text": text,
         })
 
@@ -450,8 +465,8 @@ def transcribe_audio(
                 continue
             words.append({
                 "word": text,
-                "start": round(float(w.get("start") or 0.0), 3),
-                "end": round(float(w.get("end") or 0.0), 3),
+                "start": round(_seconds(w.get("start")), 3),
+                "end": round(_seconds(w.get("end")), 3),
             })
     return segments, backend, words
 

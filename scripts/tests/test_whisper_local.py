@@ -40,6 +40,20 @@ class TestWhisperCppParsing(unittest.TestCase):
         self.assertEqual(len(words), 2)
 
 
+class TestCloudResponseTimes(unittest.TestCase):
+
+    def test_bad_cloud_times_become_system_exit(self):
+        for value in ("nan", "inf", "abc", [1]):
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                whisper._segments_from_response({"segments": [{"start": value, "end": 1, "text": "hi"}]})
+
+    def test_valid_cloud_times_parse(self):
+        segments = whisper._segments_from_response(
+            {"segments": [{"start": 1.234, "end": "2.5", "text": " hi "}]},
+        )
+        self.assertEqual(segments, [{"start": 1.23, "end": 2.5, "text": "hi"}])
+
+
 class TestTranscribeLocal(unittest.TestCase):
 
     def setUp(self):
