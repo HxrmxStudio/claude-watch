@@ -227,8 +227,9 @@ The script gets a timestamped transcript in one of two ways:
 2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
    - **Groq** — `whisper-large-v3`. Preferred default: cheaper, faster. Get a key at console.groq.com/keys.
    - **OpenAI** — `whisper-1`. Fallback. Get a key at platform.openai.com/api-keys.
+   - **Local** — whisper.cpp (`whisper-cli`) with a model at `~/.local/share/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin` or `WHISPER_CPP_MODEL`. No key, nothing uploaded; used when neither key is set.
 
-Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are set; override with `--whisper openai` to force OpenAI. Use `--no-whisper` to skip the fallback entirely.
+Keys and `WHISPER_CPP_MODEL` live in `~/.config/watch/.env`. The script tries Groq, then OpenAI, then local; force one with `--whisper groq|openai|local`. Use `--no-whisper` to skip the fallback entirely.
 
 ## Failure modes and handling
 
@@ -255,6 +256,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Runs `yt-dlp` locally to download the video and pull native captions when the source supports them (public data; the request goes directly to whatever host the URL points at)
 - Runs `ffmpeg` / `ffprobe` locally to extract frames as JPEGs and, when Whisper is needed, a mono 16 kHz audio clip
 - Sends the extracted audio clip to Groq's Whisper API (`api.groq.com/openai/v1/audio/transcriptions`) when `GROQ_API_KEY` is set (preferred — cheaper, faster)
+- With no API key and whisper.cpp installed, transcribes the audio on-device with `whisper-cli` (nothing is uploaded)
 - Sends the extracted audio clip to OpenAI's audio transcription API (`api.openai.com/v1/audio/transcriptions`) when `OPENAI_API_KEY` is set and Groq is not, or when `--whisper openai` is forced
 - Writes the downloaded video, frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
 - Reads / creates `~/.config/watch/.env` (mode `0600`) to store the Whisper API key(s) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
