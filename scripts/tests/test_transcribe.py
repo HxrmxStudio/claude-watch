@@ -107,6 +107,25 @@ class TestParseVtt(unittest.TestCase):
                     [(2.0, "Second cue"), (3.0, "Third")],
                 )
 
+    def test_timestamps_without_hours(self):
+        # WebVTT allows MM:SS.mmm; hand-made and third-party files use it.
+        text = self._parse("WEBVTT\n\n01:02.500 --> 01:04.000\nShort form\n")
+        self.assertEqual(text, "Short form")
+        path = self.tmp / "captions.vtt"
+        self.assertEqual(parse_vtt(str(path))[0]["start"], 62.5)
+
+    def test_skips_several_placeholder_lines(self):
+        text = self._parse("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n \n \nhello\n")
+        self.assertEqual(text, "hello")
+
+    def test_decodes_html_entities(self):
+        text = self._parse("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nR&amp;D &gt; hype\n")
+        self.assertEqual(text, "R&D > hype")
+
+    def test_non_breaking_spaces_collapse(self):
+        text = self._parse("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nsee&nbsp; their&nbsp;&nbsp;\n")
+        self.assertEqual(text, "see their")
+
     def test_rolling_segments_keep_start_times(self):
         path = self.tmp / "captions.vtt"
         path.write_text(ROLLING_AUTO_VTT, encoding="utf-8")
