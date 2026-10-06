@@ -17,8 +17,8 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from download import download, is_url  # noqa: E402
 from frames import (  # noqa: E402
-    MAX_FPS, SCENE_THRESHOLD, auto_fps, auto_fps_focus, detect_scene_times, extract,
-    extract_scene_change,
+    MAX_FPS, SCENE_THRESHOLD, auto_fps, auto_fps_focus, build_contact_sheets,
+    detect_scene_times, extract, extract_scene_change,
     format_time, get_metadata, merge_bursts, parse_time, select_hero_frames,
 )
 from hook import analyse_hook  # noqa: E402
@@ -154,6 +154,8 @@ def main() -> int:
         )
         sampling_mode = "uniform"
 
+    sheets = build_contact_sheets(frames, work / "sheets")
+
     # Pacing uses every detected cut, not just the frames kept for the budget.
     scene_times = all_scene_times if sampling_mode == "scene-change" else []
     pacing = compute_pacing(
@@ -275,13 +277,27 @@ def main() -> int:
             "re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom into a specific section."
         )
 
+    if sheets:
+        print()
+        print("## Contact sheets")
+        print()
+        print(
+            "**Read these first.** Each sheet tiles up to 20 frames, 4 per row, left to right "
+            "then top to bottom; the timestamps below follow the same order."
+        )
+        print()
+        for sheet in sheets:
+            stamps = " · ".join(format_time(time) for time in sheet["timestamps"])
+            print(f"- `{sheet['path']}` — {stamps}")
+
     print()
     print("## Frames")
     print()
     print(f"Frames live at: `{work / 'frames'}`")
     print()
     print(
-        "**Read each frame path below with the Read tool to view the image.** "
+        "**Read a frame below only to see a detail the contact sheets are too small for** "
+        "(or every frame if there are no contact sheets). "
         "Frames are in chronological order; `t=MM:SS` is the absolute timestamp in the source video."
     )
     print()

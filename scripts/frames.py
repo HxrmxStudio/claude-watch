@@ -9,6 +9,7 @@ zooming in for detail).
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -340,7 +341,9 @@ def extract_at(
 PROBE_WIDTH, PROBE_HEIGHT = 64, 36
 PIXEL_DELTA = 24  # grey levels; smaller differences are compression noise
 CONTENT_SAMPLE_SECONDS = 2.0
-MIN_CONTENT_CHANGE = 0.05  # a screen counts as changed above 5% of its pixels
+# Share of probe bytes that moved: pixels in grey probes, colour channels in
+# rgb24 ones (a hue-only change moves fewer channels than a brightness change).
+MIN_CONTENT_CHANGE = 0.05
 
 
 def probe_gray_frames(
@@ -348,8 +351,13 @@ def probe_gray_frames(
     every_seconds: float,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
+    pixel_format: str = "gray",
 ) -> list[bytes]:
-    """Tiny greyscale samples (one every `every_seconds`) for cheap comparison."""
+    """Tiny samples (one every `every_seconds`) for cheap comparison.
+
+    Greyscale by default; "rgb24" keeps hue, so two screens of equal
+    brightness but different colour do not look alike.
+    """
     cmd: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
     if start_seconds is not None:
         cmd += ["-ss", f"{start_seconds:.3f}"]
@@ -357,13 +365,13 @@ def probe_gray_frames(
         cmd += ["-to", f"{end_seconds:.3f}"]
     cmd += [
         "-i", str(Path(video_path).resolve()),
-        "-vf", f"fps=1/{every_seconds},scale={PROBE_WIDTH}:{PROBE_HEIGHT},format=gray",
+        "-vf", f"fps=1/{every_seconds},scale={PROBE_WIDTH}:{PROBE_HEIGHT},format={pixel_format}",
         "-f", "rawvideo", "-",
     ]
     result = subprocess.run(cmd, capture_output=True, check=False)
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg probe failed: {result.stderr.decode(errors='replace').strip()}")
-    size = PROBE_WIDTH * PROBE_HEIGHT
+    size = PROBE_WIDTH * PROBE_HEIGHT * (3 if pixel_format == "rgb24" else 1)
     raw = result.stdout
     return [raw[offset:offset + size] for offset in range(0, len(raw) - size + 1, size)]
 
@@ -433,6 +441,186 @@ def plan_content_changes(
     return spread_evenly(best, max_frames)
 
 
+SHOT_SAMPLE_SECONDS = 0.5  # fine enough that two nearby cuts get their own sample
+SETTLE_SAMPLES = 1  # look one sample past a cut, once any dissolve has settled
+SETTLE_LIMIT = 4  # samples to wait for a transition to end; longer motion is content
+REPEAT_LOOKBACK = 30  # kept shots compared per candidate; bounds long videos
+GAP_CHANGE = 0.2  # with no spare budget, only a new screen (not a gesture) earns a frame
+
+
+def _sample_index(time: float, sample_count: int, every_seconds: float, range_start: float) -> int:
+    first_after = math.ceil((time - range_start) / every_seconds - 1e-9)
+    return max(0, min(sample_count - 1, first_after + SETTLE_SAMPLES))
+
+
+def _settle(index: int, probes: list[bytes], end: int | None = None) -> int:
+    """Move past a fade or slide-in until two samples in a row look alike.
+
+    Never reaches `end` (exclusive), the first sample of the next shot.
+    """
+    end = len(probes) if end is None else min(end, len(probes))
+    for _ in range(SETTLE_LIMIT):
+        if index + 1 >= end or _changed_ratio(probes[index], probes[index + 1]) <= MIN_CONTENT_CHANGE:
+            break
+        index += 1
+    return index
+
+
+def _shot_sample(time: float, next_cut: float, probes: list[bytes],
+                 every_seconds: float, range_start: float) -> int:
+    """Settled sample of the shot opening at `time`, kept before `next_cut`."""
+    end = len(probes)
+    if next_cut != float("inf"):
+        end = math.ceil((next_cut - range_start) / every_seconds - 1e-9)
+    start = min(_sample_index(time, len(probes), every_seconds, range_start), max(0, end - 1))
+    return _settle(start, probes, end)
+
+
+def drop_repeated_shots(
+    times: list[float],
+    probes: list[bytes],
+    every_seconds: float,
+    keep: tuple[float, ...] = (),
+    range_start: float = 0.0,
+) -> list[float]:
+    """Drop shots that look like a shot already kept.
+
+    Edited videos cut back to the same framing over and over (a talking head
+    between slides); each return costs a frame and shows nothing new. `keep`
+    times (opening, chapter starts) always stay and count as seen.
+    """
+    if not probes:
+        return sorted(set(times) | set(keep))
+    forced = set(keep)
+    kept: list[float] = []
+    seen: list[bytes] = []
+    ordered = sorted(set(times) | forced)
+    for position, time in enumerate(ordered):
+        # The settled sample is the one extracted later, so judge that one.
+        next_cut = ordered[position + 1] if position + 1 < len(ordered) else float("inf")
+        sample = probes[_shot_sample(time, next_cut, probes, every_seconds, range_start)]
+        repeated = any(
+            _changed_ratio(sample, earlier) <= MIN_CONTENT_CHANGE
+            for earlier in seen[-REPEAT_LOOKBACK:]
+        )
+        if time in forced or not repeated:
+            kept.append(time)
+            seen.append(sample)
+    return kept
+
+
+def fill_scene_gaps(
+    scene_times: list[float],
+    probes: list[bytes],
+    every_seconds: float,
+    max_gap_seconds: float,
+    range_start: float = 0.0,
+    changed_ratio: float = GAP_CHANGE,
+) -> list[float]:
+    """Content-change times inside stretches longer than `max_gap_seconds` with no cut.
+
+    Slides that cross-fade or a screen share inside one shot never trip the
+    scene detector, so a whole section can go unseen. Within those stretches
+    a new frame is taken whenever `changed_ratio` of the screen changed, once
+    the change has settled; nothing is forced by time alone, so a long
+    unchanging shot stays one frame. An animation changes the screen on every
+    sample, so a stretch gets at most its fair share of the budget (one filler
+    per half `max_gap_seconds`), spread over the stretch.
+    """
+    range_end = range_start + len(probes) * every_seconds
+    bounds = sorted({range_start, range_end, *(
+        time for time in scene_times if range_start <= time < range_end
+    )})
+    fillers: list[float] = []
+    for left, right in zip(bounds, bounds[1:]):
+        if right - left <= max_gap_seconds:
+            continue
+        # Start once the opening shot has settled, so its own fade is not a change.
+        first = _shot_sample(left, right, probes, every_seconds, range_start)
+        last = int((right - range_start) / every_seconds)  # samples before the next cut
+        changes = pick_content_changes(
+            probes[first:last], every_seconds, changed_ratio,
+            range_start=range_start + first * every_seconds,
+        )
+        # The first change is the shot that opened the stretch. Pick before
+        # settling: settling compares samples and most changes are dropped.
+        picked = spread_evenly(changes[1:], int(2 * (right - left) // max_gap_seconds))
+        fillers += sorted({
+            round(range_start + _settle(round((time - range_start) / every_seconds), probes, last)
+                  * every_seconds, 2)
+            for time in picked
+        })
+    return fillers
+
+
+def _settled_cut_times(times: list[float], probes: list[bytes], every_seconds: float,
+                       cuts: set[float], all_cuts: list[float], range_start: float) -> list[float]:
+    """Move each cut past its transition, never onto or beyond the next frame.
+
+    Only cuts move: fillers are settled already, and anchors keep their time.
+    Settling stops before the next detected cut even when that cut was not
+    kept, or a short shot would be replaced by the one after it.
+    """
+    settled: list[float] = []
+    for position, time in enumerate(times):
+        next_time = times[position + 1] if position + 1 < len(times) else float("inf")
+        if time in cuts:
+            next_cut = next((cut for cut in all_cuts if cut > time), float("inf"))
+            index = _shot_sample(time, next_cut, probes, every_seconds, range_start)
+            later = round(range_start + index * every_seconds, 2)
+            if time < later < next_time:
+                time = later
+        settled.append(time)
+    return settled
+
+
+def plan_scene_frames(
+    scene_times: list[float],
+    probes: list[bytes],
+    duration: float,
+    max_frames: int,
+    anchors: tuple[float, ...] = (),
+    range_start: float = 0.0,
+) -> list[float]:
+    """Pick frame times for an edited video: cuts, minus repeated framings,
+    plus screen changes inside long uncut stretches.
+
+    The change needed for a filler starts at GAP_CHANGE and is lowered while
+    the result still fits the budget, so spare budget goes to smaller screen
+    changes (a UI edit) instead of going unused. Frames land after transitions.
+    """
+    anchors = tuple(round(anchor, 2) for anchor in anchors)
+    if not probes:
+        return plan_frame_times(scene_times, duration, max_frames, anchors, range_start)
+    keep = (round(range_start, 2), *anchors)
+    max_gap = 2 * duration / max(1, max_frames)
+    # Only cuts can return to a framing already seen. A filler is a change from
+    # the screen before it by construction; deduplicating fillers would drop the
+    # small successive edits a UI walkthrough is about.
+    unique_cuts = drop_repeated_shots(
+        scene_times, probes, SHOT_SAMPLE_SECONDS, keep=keep, range_start=range_start,
+    )
+
+    def candidates_at(ratio: float) -> list[float]:
+        fillers = fill_scene_gaps(scene_times, probes, SHOT_SAMPLE_SECONDS, max_gap, range_start, ratio)
+        return sorted({*unique_cuts, *fillers})
+
+    best = candidates_at(GAP_CHANGE)
+    low, high = MIN_CONTENT_CHANGE, GAP_CHANGE
+    while len(best) < max_frames and high - low > 0.01:
+        middle = (low + high) / 2
+        candidates = candidates_at(middle)
+        if len(candidates) <= max_frames:
+            best, high = candidates, middle
+        else:
+            low = middle
+    times = plan_frame_times(best, duration, max_frames, anchors, range_start)
+    cuts = set(scene_times) - set(keep)
+    return _settled_cut_times(
+        times, probes, SHOT_SAMPLE_SECONDS, cuts, sorted({*scene_times, *keep}), range_start,
+    )
+
+
 def extract_scene_change(
     video_path: str,
     out_dir: Path,
@@ -480,7 +668,11 @@ def extract_scene_change(
     if len(scene_times) + 1 < uniform_fallback_min:
         # Screencasts barely cut: follow what changes on screen instead.
         every = min(CONTENT_SAMPLE_SECONDS, max(0.5, eff_duration / (max_frames * 4)))
-        probes = probe_gray_frames(video_path, every, start_seconds, end_seconds)
+        try:
+            probes = probe_gray_frames(video_path, every, start_seconds, end_seconds)
+        except SystemExit as exc:
+            print(f"[watch] content probe failed, sampling uniformly: {exc}", file=sys.stderr)
+            probes = []
         if len(pick_content_changes(probes, every, MIN_CONTENT_CHANGE)) > 1:
             times = plan_content_changes(
                 probes, every, max_frames, anchors=in_range, range_start=eff_start,
@@ -494,10 +686,76 @@ def extract_scene_change(
             start_seconds=start_seconds, end_seconds=end_seconds,
         )
 
-    times = plan_frame_times(
-        scene_times, eff_duration, max_frames, anchors=in_range, range_start=eff_start,
-    )
+    try:
+        probes = probe_gray_frames(
+            video_path, SHOT_SAMPLE_SECONDS, start_seconds, end_seconds, pixel_format="rgb24",
+        )
+    except SystemExit as exc:
+        # Cuts alone still cover the video; lose the refinements, not the run.
+        print(f"[watch] shot probe failed, keeping plain cuts: {exc}", file=sys.stderr)
+        probes = []
+    times = plan_scene_frames(scene_times, probes, eff_duration, max_frames, in_range, eff_start)
     return extract_at(video_path, out_dir, times, resolution=resolution)
+
+
+def _concat_quote(path: str) -> str:
+    """Escape a path for a single-quoted line of ffmpeg's concat list."""
+    return str(Path(path).resolve()).replace("'", "'\\''")
+
+
+def build_contact_sheets(
+    frames: list[dict],
+    out_dir: Path,
+    columns: int = 4,
+    rows: int = 5,
+    cell_width: int = 480,
+) -> list[dict]:
+    """Tile the frames into grids so a whole video reads in a few images.
+
+    Cells run left to right, top to bottom; each sheet lists the timestamps
+    of its cells (ffmpeg here has no drawtext, so they are not burned in).
+    """
+    if not frames:
+        return []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for existing in out_dir.glob("sheet_*.jpg"):
+        existing.unlink()
+
+    listing = out_dir / "frames.txt"
+    listing.write_text(
+        "".join(f"file '{_concat_quote(frame['path'])}'\n" for frame in frames),
+        encoding="utf-8",
+    )
+    cell_height = cell_width * 9 // 16
+    result = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "concat", "-safe", "0", "-i", str(listing),
+            "-vf", (
+                f"scale={cell_width}:{cell_height}:force_original_aspect_ratio=decrease,"
+                f"pad={cell_width}:{cell_height}:(ow-iw)/2:(oh-ih)/2,"
+                f"tile={columns}x{rows}:padding=4:margin=4"
+            ),
+            "-fps_mode", "passthrough", "-q:v", "4", str(out_dir / "sheet_%d.jpg"),
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    listing.unlink(missing_ok=True)
+    if result.returncode != 0:
+        print(f"[watch] contact sheets failed: {result.stderr.strip()}", file=sys.stderr)
+        return []
+
+    per_sheet = columns * rows
+    stamps = [frame["timestamp_seconds"] for frame in frames]
+    sheets = sorted(out_dir.glob("sheet_*.jpg"), key=lambda path: int(path.stem.split("_")[1]))
+    if len(sheets) != math.ceil(len(frames) / per_sheet):
+        # A skipped frame would shift every later cell's timestamp.
+        print("[watch] contact sheets skipped frames; read single frames instead", file=sys.stderr)
+        return []
+    return [
+        {"path": str(path), "timestamps": stamps[idx * per_sheet:(idx + 1) * per_sheet]}
+        for idx, path in enumerate(sheets)
+    ]
 
 
 def select_hero_frames(
