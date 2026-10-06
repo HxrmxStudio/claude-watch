@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import mimetypes
 import os
 import shutil
@@ -302,11 +303,11 @@ def _segments_from_whisper_cpp(data: dict) -> list[dict]:
         if not text:
             continue
         offsets = item.get("offsets") or {}
-        out.append({
-            "start": round(float(offsets.get("from") or 0) / 1000, 2),
-            "end": round(float(offsets.get("to") or 0) / 1000, 2),
-            "text": text,
-        })
+        start = float(offsets.get("from") or 0) / 1000
+        end = float(offsets.get("to") or 0) / 1000
+        if not (math.isfinite(start) and math.isfinite(end)):
+            raise ValueError(f"non-finite offsets in whisper.cpp output: {offsets}")
+        out.append({"start": round(start, 2), "end": round(end, 2), "text": text})
     return out
 
 
@@ -350,7 +351,7 @@ def _transcribe_local(
         data = json.loads(json_path.read_text(encoding="utf-8", errors="replace"))
         segments = _segments_from_whisper_cpp(data)
         words = _words_from_whisper_cpp(data) if word_timestamps else []
-    except (ValueError, TypeError, AttributeError) as exc:
+    except (ValueError, TypeError, AttributeError, ArithmeticError) as exc:
         raise SystemExit(f"whisper.cpp returned unreadable JSON: {exc}") from exc
     return segments, words
 

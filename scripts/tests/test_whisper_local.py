@@ -82,7 +82,10 @@ class TestTranscribeLocal(unittest.TestCase):
 
     def test_unexpected_json_shapes_become_system_exit(self):
         shapes = ("[]", "null", '{"transcription": ["x"]}',
-                  '{"transcription": [{"offsets": {"from": "abc"}, "text": "hi"}]}')
+                  '{"transcription": [{"offsets": {"from": "abc"}, "text": "hi"}]}',
+                  '{"transcription": [{"offsets": {"from": ' + "9" * 400 + '}, "text": "hi"}]}',
+                  '{"transcription": [{"offsets": {"from": NaN}, "text": "hi"}]}',
+                  '{"transcription": [{"offsets": {"to": Infinity}, "text": "hi"}]}')
         for payload in shapes:
             def fake_run(cmd, payload=payload, **_kwargs):
                 if cmd[0] == whisper.LOCAL_BINARY:
