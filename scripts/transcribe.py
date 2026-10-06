@@ -6,19 +6,21 @@ scrolls). We dedupe consecutive identical cues and merge their time ranges.
 """
 from __future__ import annotations
 
+import html
 import re
 import sys
 from pathlib import Path
 
 
+# Hours are optional in WebVTT (MM:SS.mmm is valid).
 TS_RE = re.compile(
-    r"(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2})[.,](\d{3})"
+    r"(?:(\d{2,}):)?(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+(?:(\d{2,}):)?(\d{2}):(\d{2})[.,](\d{3})"
 )
 TAG_RE = re.compile(r"<[^>]+>")
 
 
-def _to_seconds(h: str, m: str, s: str, ms: str) -> float:
-    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+def _to_seconds(h: str | None, m: str, s: str, ms: str) -> float:
+    return int(h or 0) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
 
 
 def parse_vtt(path: str) -> list[dict]:
@@ -41,13 +43,18 @@ def parse_vtt(path: str) -> list[dict]:
         # YouTube auto-captions open some cues with a whitespace-only
         # placeholder line followed by the cue text. A whitespace-only line
         # with no text after it is just a separator and ends the cue.
-        if (i + 1 < len(lines) and lines[i] and not lines[i].strip()
-                and lines[i + 1].strip() and not _starts_next_cue(lines, i + 1)):
-            i += 1
+        placeholder_end = i
+        while placeholder_end < len(lines) and lines[placeholder_end] and not lines[placeholder_end].strip():
+            placeholder_end += 1
+        if (placeholder_end > i and placeholder_end < len(lines)
+                and lines[placeholder_end].strip() and not _starts_next_cue(lines, placeholder_end)):
+            i = placeholder_end
 
         cue_lines: list[str] = []
         while i < len(lines) and lines[i].strip() and not _starts_next_cue(lines, i):
-            cleaned = TAG_RE.sub("", lines[i]).strip()
+            # Decode entities (manual captions carry &nbsp;) and collapse the
+            # resulting non-breaking and repeated spaces.
+            cleaned = " ".join(html.unescape(TAG_RE.sub("", lines[i])).split())
             if cleaned:
                 cue_lines.append(cleaned)
             i += 1
