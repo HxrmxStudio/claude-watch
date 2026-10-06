@@ -26,6 +26,7 @@ def parse_vtt(path: str) -> list[dict]:
     lines = text.splitlines()
 
     segments: list[dict] = []
+    previous_lines: list[str] = []
     i = 0
     while i < len(lines):
         match = TS_RE.match(lines[i])
@@ -37,6 +38,11 @@ def parse_vtt(path: str) -> list[dict]:
         end = _to_seconds(*match.groups()[4:])
         i += 1
 
+        # YouTube auto-captions open some cues with a whitespace-only
+        # placeholder line; it is part of the cue, not its terminator.
+        if i < len(lines) and lines[i] and not lines[i].strip():
+            i += 1
+
         cue_lines: list[str] = []
         while i < len(lines) and lines[i].strip():
             cleaned = TAG_RE.sub("", lines[i]).strip()
@@ -44,12 +50,27 @@ def parse_vtt(path: str) -> list[dict]:
                 cue_lines.append(cleaned)
             i += 1
 
-        cue_text = " ".join(cue_lines).strip()
+        new_lines = _drop_rolled_line(previous_lines, cue_lines)
+        if cue_lines:
+            previous_lines = cue_lines
+        cue_text = " ".join(new_lines).strip()
         if cue_text:
             segments.append({"start": round(start, 2), "end": round(end, 2), "text": cue_text})
         i += 1
 
     return _dedupe(segments)
+
+
+def _drop_rolled_line(previous_lines: list[str], cue_lines: list[str]) -> list[str]:
+    """Drop the line YouTube auto-captions roll over from the previous cue.
+
+    Rolling captions show two lines: the first repeats the previous cue's last
+    line. Comparing whole lines (not word overlap) keeps genuine repetitions
+    across cue boundaries in manual captions ("think that / that takes").
+    """
+    if previous_lines and cue_lines and cue_lines[0] == previous_lines[-1]:
+        return cue_lines[1:]
+    return cue_lines
 
 
 def _dedupe(segments: list[dict]) -> list[dict]:

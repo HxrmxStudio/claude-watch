@@ -41,12 +41,41 @@ def resolve_local(path: str) -> dict:
     }
 
 
+def _manual_subtitle_languages(info_path: Path) -> set[str]:
+    """Languages with human-made subtitles, per yt-dlp's info.json."""
+    if not info_path.exists():
+        return set()
+    try:
+        raw = json.loads(info_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"[watch] info.json unreadable for subtitle ranking: {exc}", file=sys.stderr)
+        return set()
+    return set((raw.get("subtitles") or {}).keys())
+
+
 def _pick_subtitle(out_dir: Path) -> Path | None:
+    """Pick the best caption track: manual, then original-language auto, then any.
+
+    File names alone cannot tell manual from auto ("video.en.vtt" may be a
+    machine translation), so manual tracks come from info.json. Among auto
+    tracks, "-orig" is the original audio language rather than a translation.
+    """
     candidates = sorted(out_dir.glob("video*.vtt"))
     if not candidates:
         return None
-    preferred = [c for c in candidates if ".en" in c.name]
-    return preferred[0] if preferred else candidates[0]
+    manual = _manual_subtitle_languages(out_dir / "video.info.json")
+
+    def rank(path: Path) -> tuple[int, int, str]:
+        language = path.name[len("video."):-len(".vtt")]
+        if language in manual:
+            kind = 0
+        elif language.endswith("-orig"):
+            kind = 1
+        else:
+            kind = 2
+        return kind, 0 if language.startswith("en") else 1, path.name
+
+    return min(candidates, key=rank)
 
 
 def _pick_video(out_dir: Path) -> Path | None:
@@ -74,7 +103,9 @@ def download_url(url: str, out_dir: Path) -> dict:
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en,en-US,en-GB,en-orig",
+        # English tracks plus the original-language auto track (".*-orig"),
+        # so non-English videos still get captions without Whisper.
+        "--sub-langs", "en,en-US,en-GB,en-orig,.*-orig",
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
