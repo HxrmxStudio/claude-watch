@@ -289,10 +289,20 @@ def _seconds(value: object) -> float:
     return seconds
 
 
+def _items(container: object, key: str) -> list[dict]:
+    """The list of objects under `key` of an API response, or SystemExit."""
+    if not isinstance(container, dict):
+        raise SystemExit(f"Whisper returned an unexpected response: {type(container).__name__}")
+    items = container.get(key) or []
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        raise SystemExit(f"Whisper returned malformed {key!r} in its response")
+    return items
+
+
 def _segments_from_response(data: dict) -> list[dict]:
     """Convert Whisper verbose_json into our {start, end, text} segment format."""
     out: list[dict] = []
-    for seg in data.get("segments") or []:
+    for seg in _items(data, "segments"):
         text = (seg.get("text") or "").strip()
         if not text:
             continue
@@ -459,7 +469,7 @@ def transcribe_audio(
     segments = _segments_from_response(response)
     words: list[dict] = []
     if word_timestamps:
-        for w in response.get("words") or []:
+        for w in _items(response, "words"):
             text = (w.get("word") or "").strip()
             if not text:
                 continue
