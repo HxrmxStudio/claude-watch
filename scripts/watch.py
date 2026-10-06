@@ -17,7 +17,8 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from download import download, is_url  # noqa: E402
 from frames import (  # noqa: E402
-    MAX_FPS, auto_fps, auto_fps_focus, detect_scene_times, extract, extract_scene_change,
+    MAX_FPS, SCENE_THRESHOLD, auto_fps, auto_fps_focus, detect_scene_times, extract,
+    extract_scene_change,
     format_time, get_metadata, merge_bursts, parse_time, select_hero_frames,
 )
 from hook import analyse_hook  # noqa: E402
@@ -121,7 +122,7 @@ def main() -> int:
     if use_scene:
         print("[watch] extracting scene-change frames (one per shot)…", file=sys.stderr)
         all_scene_times = merge_bursts(detect_scene_times(
-            video_path, 0.3, start_seconds=start_sec, end_seconds=end_sec,
+            video_path, SCENE_THRESHOLD, start_seconds=start_sec, end_seconds=end_sec,
         ))
         chapter_starts = tuple(
             float(chapter["start_time"])
@@ -131,7 +132,7 @@ def main() -> int:
         frames = extract_scene_change(
             video_path,
             work / "frames",
-            scene_threshold=0.3,
+            scene_threshold=SCENE_THRESHOLD,
             resolution=args.resolution,
             max_frames=max_frames,
             uniform_fallback_min=10,

@@ -55,6 +55,20 @@ class TestPlanFrameTimes(unittest.TestCase):
         self.assertIn(480.0, times)
         self.assertLessEqual(len(times), 12)
 
+    def test_ignores_cuts_outside_the_range(self):
+        early = [0.1 * idx for idx in range(1, 300)]
+        in_range = [100.0 + idx for idx in range(50)]
+        times = plan_frame_times(early + in_range, duration=50.0, max_frames=10, range_start=100.0)
+        self.assertLessEqual(len(times), 10)
+        self.assertTrue(all(100.0 <= time < 150.0 for time in times))
+
+    def test_more_anchors_than_budget_still_reach_the_end(self):
+        anchors = tuple(float(idx * 20) for idx in range(1, 31))  # 30 chapters
+        times = plan_frame_times([], duration=620.0, max_frames=10, anchors=anchors)
+        self.assertEqual(len(times), 10)
+        self.assertEqual(times[0], 0.0)
+        self.assertEqual(times[-1], 600.0)
+
     def test_result_is_sorted_and_unique(self):
         times = plan_frame_times(
             [0.0, 1.0, 2.0, 3.0], duration=10.0, max_frames=10, anchors=(2.0,),

@@ -186,11 +186,12 @@ def extract(
 
 
 BURST_GAP_SECONDS = 1.0
+SCENE_THRESHOLD = 0.3  # ffmpeg scene score; catches hard cuts and most dissolves
 
 
 def detect_scene_times(
     video_path: str,
-    scene_threshold: float = 0.3,
+    scene_threshold: float = SCENE_THRESHOLD,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
 ) -> list[float]:
@@ -257,8 +258,14 @@ def plan_frame_times(
     window, so a cut-dense opening cannot starve the rest of the video; any
     budget left after that goes to the remaining cuts, evenly by index.
     """
-    fixed = sorted({round(range_start, 2), *(round(anchor, 2) for anchor in anchors)})[:max_frames]
-    candidates = [time for time in sorted(set(scene_times)) if time not in fixed]
+    range_end = range_start + duration
+    fixed = spread_evenly(
+        sorted({round(range_start, 2), *(round(anchor, 2) for anchor in anchors)}), max_frames,
+    )
+    candidates = [
+        time for time in sorted(set(scene_times))
+        if range_start <= time < range_end and time not in fixed
+    ]
     budget = max_frames - len(fixed)
     if len(candidates) <= budget:
         return sorted(fixed + candidates)
@@ -274,11 +281,24 @@ def plan_frame_times(
                 chosen.append(time)
 
     leftover = [time for time in candidates if time not in chosen]
-    spare = budget - len(chosen)
-    if spare > 0 and leftover:
-        step = len(leftover) / spare
-        chosen += [leftover[int(idx * step)] for idx in range(spare)]
+    chosen += spread_evenly(leftover, budget - len(chosen))
     return sorted(set(fixed + chosen))
+
+
+def spread_evenly(items: list[float], count: int) -> list[float]:
+    """Pick `count` items evenly by index, always keeping the first and last.
+
+    Used whenever a list must be cut to a budget: keeping the first N would
+    silently drop the end of the video.
+    """
+    if count <= 0:
+        return []
+    if len(items) <= count:
+        return list(items)
+    if count == 1:
+        return [items[0]]
+    step = (len(items) - 1) / (count - 1)
+    return [items[round(idx * step)] for idx in range(count)]
 
 
 def extract_at(
@@ -319,7 +339,7 @@ def extract_at(
 def extract_scene_change(
     video_path: str,
     out_dir: Path,
-    scene_threshold: float = 0.3,
+    scene_threshold: float = SCENE_THRESHOLD,
     resolution: int = 512,
     max_frames: int = 100,
     uniform_fallback_min: int = 10,
