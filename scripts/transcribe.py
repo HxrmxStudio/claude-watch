@@ -17,8 +17,9 @@ TS_RE = re.compile(
     r"(?:(\d{2,}):)?(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+(?:(\d{2,}):)?(\d{2}):(\d{2})[.,](\d{3})"
 )
 TAG_RE = re.compile(r"<[^>]+>")
-# Line breaks written as entities ("&lt;br&gt;") only become tags after
-# decoding, so they are replaced explicitly; other decoded text is kept.
+# Line breaks become spaces both raw ("<br>") and written as entities
+# ("&lt;br&gt;", which only becomes a tag after decoding); other decoded
+# text is kept.
 LINE_BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
 
 
@@ -57,7 +58,8 @@ def parse_vtt(path: str) -> list[dict]:
         while i < len(lines) and lines[i].strip() and not _starts_next_cue(lines, i):
             # Decode entities (manual captions carry &nbsp;) and collapse the
             # resulting non-breaking and repeated spaces.
-            decoded = LINE_BREAK_RE.sub(" ", html.unescape(TAG_RE.sub("", lines[i])))
+            untagged = TAG_RE.sub("", LINE_BREAK_RE.sub(" ", lines[i]))
+            decoded = LINE_BREAK_RE.sub(" ", html.unescape(untagged))
             cleaned = " ".join(decoded.split())
             if cleaned:
                 cue_lines.append(cleaned)

@@ -131,6 +131,10 @@ class TestParseVtt(unittest.TestCase):
         )
         self.assertEqual(text, "the image and more, keep <b>literal")
 
+    def test_raw_line_breaks_become_spaces(self):
+        text = self._parse("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\na<br>b<BR/>c <i>d</i>\n")
+        self.assertEqual(text, "a b c d")
+
     def test_non_breaking_spaces_collapse(self):
         text = self._parse("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nsee&nbsp; their&nbsp;&nbsp;\n")
         self.assertEqual(text, "see their")
