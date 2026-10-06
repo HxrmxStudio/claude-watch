@@ -80,6 +80,22 @@ class TestTranscribeLocal(unittest.TestCase):
             whisper._transcribe_local(self.audio, "model.bin")
 
 
+    def test_unexpected_json_shapes_become_system_exit(self):
+        shapes = ("[]", "null", '{"transcription": ["x"]}',
+                  '{"transcription": [{"offsets": {"from": "abc"}, "text": "hi"}]}')
+        for payload in shapes:
+            def fake_run(cmd, payload=payload, **_kwargs):
+                if cmd[0] == whisper.LOCAL_BINARY:
+                    output_base = cmd[cmd.index("-of") + 1]
+                    Path(output_base + ".json").write_text(payload, encoding="utf-8")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with self.subTest(payload=payload), \
+                    mock.patch.object(whisper.subprocess, "run", side_effect=fake_run), \
+                    self.assertRaises(SystemExit):
+                whisper._transcribe_local(self.audio, "model.bin")
+
+
 class TestLocalBackendDetection(unittest.TestCase):
 
     def setUp(self):
