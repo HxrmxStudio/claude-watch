@@ -48,7 +48,8 @@ class TestCloudResponseTimes(unittest.TestCase):
                 whisper._segments_from_response({"segments": [{"start": value, "end": 1, "text": "hi"}]})
 
     def test_non_object_cloud_items_become_system_exit(self):
-        for payload in ({"segments": ["text"]}, {"segments": "text"}, ["not", "a", "dict"]):
+        for payload in ({"segments": ["text"]}, {"segments": "text"}, ["not", "a", "dict"],
+                        {"segments": [{"start": 0, "end": 1, "text": 5}]}, {"text": 5}):
             with self.subTest(payload=payload), self.assertRaises(SystemExit):
                 whisper._segments_from_response(payload)
 

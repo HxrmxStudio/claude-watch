@@ -299,11 +299,20 @@ def _items(container: object, key: str) -> list[dict]:
     return items
 
 
+def _text(value: object) -> str:
+    """Stripped text from an API value (None counts as empty), or SystemExit."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise SystemExit(f"Whisper returned non-text content: {type(value).__name__}")
+    return value.strip()
+
+
 def _segments_from_response(data: dict) -> list[dict]:
     """Convert Whisper verbose_json into our {start, end, text} segment format."""
     out: list[dict] = []
     for seg in _items(data, "segments"):
-        text = (seg.get("text") or "").strip()
+        text = _text(seg.get("text"))
         if not text:
             continue
         out.append({
@@ -313,7 +322,7 @@ def _segments_from_response(data: dict) -> list[dict]:
         })
 
     if not out:
-        full = (data.get("text") or "").strip()
+        full = _text(data.get("text"))
         if full:
             out.append({"start": 0.0, "end": 0.0, "text": full})
 
@@ -470,7 +479,7 @@ def transcribe_audio(
     words: list[dict] = []
     if word_timestamps:
         for w in _items(response, "words"):
-            text = (w.get("word") or "").strip()
+            text = _text(w.get("word"))
             if not text:
                 continue
             words.append({
