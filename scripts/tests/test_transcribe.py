@@ -89,6 +89,24 @@ class TestParseVtt(unittest.TestCase):
             parse_vtt(str(path)), [{"start": 2.0, "end": 3.0, "text": "Second cue"}],
         )
 
+    def test_spaced_separators_without_cue_ids_keep_every_cue(self):
+        # YouTube cues carry no ids; whitespace-only separators (space, tab)
+        # and CR-only line endings must not swallow the following cue.
+        for separator, newline in ((" ", "\n"), ("\t", "\n"), (" ", "\r")):
+            body = newline.join([
+                "WEBVTT", "",
+                "00:00:01.000 --> 00:00:02.000", separator,
+                "00:00:02.000 --> 00:00:03.000", "Second cue", "",
+                "00:00:03.000 --> 00:00:04.000", "Third", "",
+            ])
+            path = self.tmp / "captions.vtt"
+            path.write_text(body, encoding="utf-8", newline="")
+            with self.subTest(separator=repr(separator), newline=repr(newline)):
+                self.assertEqual(
+                    [(segment["start"], segment["text"]) for segment in parse_vtt(str(path))],
+                    [(2.0, "Second cue"), (3.0, "Third")],
+                )
+
     def test_rolling_segments_keep_start_times(self):
         path = self.tmp / "captions.vtt"
         path.write_text(ROLLING_AUTO_VTT, encoding="utf-8")
