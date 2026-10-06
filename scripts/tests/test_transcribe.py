@@ -122,6 +122,15 @@ class TestParseVtt(unittest.TestCase):
         text = self._parse("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nR&amp;D &gt; hype\n")
         self.assertEqual(text, "R&D > hype")
 
+    def test_escaped_line_breaks_become_spaces(self):
+        # Manual YouTube tracks can carry "&lt;br&gt;"; decoding must not leave a
+        # literal tag gluing words, while real escaped text like "&lt;b&gt;" stays.
+        text = self._parse(
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n"
+            "the&lt;br&gt;image and&lt;BR /&gt;more, keep &lt;b&gt;literal\n"
+        )
+        self.assertEqual(text, "the image and more, keep <b>literal")
+
     def test_non_breaking_spaces_collapse(self):
         text = self._parse("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nsee&nbsp; their&nbsp;&nbsp;\n")
         self.assertEqual(text, "see their")
