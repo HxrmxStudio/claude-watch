@@ -52,7 +52,7 @@ fi
 if [[ -z "$HAS_FFMPEG" || -z "$HAS_YTDLP" ]]; then
   echo "/watch: needs ffmpeg + yt-dlp. Run \`python3 \$CLAUDE_PLUGIN_ROOT/scripts/setup.py\` once to install and scaffold config."
 elif [[ -z "$HAS_GROQ" && -z "$HAS_OPENAI" ]]; then
-  echo "/watch: ready for videos with native captions. Add GROQ_API_KEY (preferred) or OPENAI_API_KEY to ~/.config/watch/.env to unlock Whisper fallback."
+  echo "/watch: ready for videos with native captions. Add GROQ_API_KEY or OPENAI_API_KEY to ~/.config/watch/.env, or install local whisper.cpp, then run \`python3 \$CLAUDE_PLUGIN_ROOT/scripts/setup.py\` to unlock the Whisper fallback."
 else
   echo "/watch: ready."
 fi
