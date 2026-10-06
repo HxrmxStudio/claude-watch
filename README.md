@@ -173,6 +173,7 @@ Other knobs (passed to `scripts/watch.py`):
 - **Best accuracy: under 10 minutes.** Past that the script prints a "sparse scan" warning — re-run focused on the part you actually care about with `--start`/`--end`.
 - **Hard caps: 2 fps, 100 frames.** Frame count drives token cost; the script enforces this even when the auto-fps math would imply higher.
 - **Whisper upload limit: 25 MB.** At mono 16 kHz that's about 50 minutes of audio. Longer videos need either captions or `--start`/`--end` to a smaller window.
+- **Keep yt-dlp current.** YouTube changes often; a yt-dlp a few months old fails with HTTP 403 or drops captions. When a download fails and yt-dlp is over 60 days old, the error says so. Update with `yt-dlp -U`, `brew upgrade yt-dlp` or `pip install -U yt-dlp`.
 - **No private platforms.** This skill doesn't log into anything. Public URLs and local files only. If yt-dlp can't reach it without auth, neither can `/watch`.
 
 ## Structure

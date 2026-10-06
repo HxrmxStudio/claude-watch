@@ -6,7 +6,9 @@ transcribe.py can parse them without needing Whisper.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +17,45 @@ from urllib.parse import urlparse
 
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
+
+# YouTube changes often enough that a few-months-old yt-dlp starts failing
+# with HTTP 403 or missing formats; past this age the failure hint says so.
+STALE_YTDLP_DAYS = 60
+YTDLP_VERSION_RE = re.compile(r"^(\d{4})\.(\d{2})\.(\d{2})")
+
+
+def ytdlp_age_days(version: str, today: dt.date) -> int | None:
+    """Days since a yt-dlp release, from its date-based version string."""
+    match = YTDLP_VERSION_RE.match(version.strip())
+    if not match:
+        return None
+    try:
+        released = dt.date(*(int(part) for part in match.groups()))
+    except ValueError:
+        return None
+    return (today - released).days
+
+
+def stale_ytdlp_hint(version: str | None, today: dt.date) -> str:
+    """One-line update hint when the installed yt-dlp is old, else ""."""
+    age = ytdlp_age_days(version, today) if version else None
+    if age is None or age <= STALE_YTDLP_DAYS:
+        return ""
+    return (
+        f" yt-dlp {version} is {age} days old; YouTube failures (HTTP 403, "
+        "missing formats or captions) are usually fixed by updating it: "
+        "`yt-dlp -U`, `brew upgrade yt-dlp` or `pip install -U yt-dlp`."
+    )
+
+
+def _installed_ytdlp_version() -> str | None:
+    try:
+        result = subprocess.run(
+            ["yt-dlp", "--version"], capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() or None
 
 
 def is_url(source: str) -> bool:
@@ -89,8 +130,9 @@ def download_url(url: str, out_dir: Path) -> dict:
     result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
     video = _pick_video(out_dir)
     if video is None:
+        hint = stale_ytdlp_hint(_installed_ytdlp_version(), dt.datetime.now(dt.timezone.utc).date())
         raise SystemExit(
-            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
+            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode}).{hint}"
         )
 
     subtitle = _pick_subtitle(out_dir)
