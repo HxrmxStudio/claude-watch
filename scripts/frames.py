@@ -185,90 +185,308 @@ def extract(
     ]
 
 
-def extract_scene_change(
+BURST_GAP_SECONDS = 1.0
+SCENE_THRESHOLD = 0.3  # ffmpeg scene score; catches hard cuts and most dissolves
+
+
+def detect_scene_times(
     video_path: str,
-    out_dir: Path,
-    scene_threshold: float = 0.3,
-    resolution: int = 512,
-    max_frames: int = 100,
-    uniform_fallback_min: int = 10,
+    scene_threshold: float = SCENE_THRESHOLD,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
-) -> list[dict]:
-    """One frame per detected shot. Falls back to uniform sampling when too few scenes.
+) -> list[float]:
+    """Return every scene-change timestamp (absolute seconds) in the range.
 
-    Uses ffmpeg's `select='gt(scene,T)'` filter — scene change scores in [0,1],
-    higher = more visual difference between frames. 0.3 is a permissive cut
-    detector that catches hard cuts and most dissolves without firing on motion.
-
-    Always emits the first frame of the range (scene filter only fires on
-    *changes*, so without this you'd miss the opening shot).
-
-    On `uniform_fallback_min`: static or near-static videos (screen recordings,
-    long talking heads) yield very few scene changes. Fall back to uniform
-    sampling — sparse frames > almost no frames.
+    Detection runs as a decode-only pass with no frame cap, so the frame
+    budget can later be spread across the whole video instead of being spent
+    on the first N cuts.
     """
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for existing in out_dir.glob("frame_*.jpg"):
-        existing.unlink()
-
-    # Build a select expression that emits frame 0 + every scene-change frame.
-    select_expr = f"eq(n\\,0)+gt(scene\\,{scene_threshold})"
-    vf = f"select='{select_expr}',metadata=mode=print:file=-,scale={resolution}:-2"
-
-    output_pattern = str(out_dir / "frame_%04d.jpg")
-    cmd: list[str] = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-    ]
+    cmd: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
     if start_seconds is not None:
         cmd += ["-ss", f"{start_seconds:.3f}"]
     if end_seconds is not None:
         cmd += ["-to", f"{end_seconds:.3f}"]
     cmd += [
         "-i", str(Path(video_path).resolve()),
-        "-vf", vf,
-        "-vsync", "vfr",
-        "-frames:v", str(max_frames),
-        "-q:v", "4",
-        output_pattern,
+        "-vf", f"select='gt(scene\\,{scene_threshold})',metadata=mode=print:file=-",
+        "-an", "-f", "null", "-",
     ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
-        raise SystemExit(f"ffmpeg scene-change extraction failed: {result.stderr.strip()}")
+        raise SystemExit(f"ffmpeg scene detection failed: {result.stderr.strip()}")
 
-    # Parse pts_time lines from stdout/stderr (ffmpeg version variance).
-    pts_times: list[float] = []
+    offset = start_seconds or 0.0
+    times: list[float] = []
     for stream in (result.stdout, result.stderr):
-        for line in stream.splitlines():
-            line = line.strip()
-            if "pts_time" in line:
-                for tok in line.split():
-                    if tok.startswith("pts_time:"):
-                        try:
-                            pts_times.append(float(tok.split(":", 1)[1]))
-                        except ValueError:
-                            pass
-                    elif tok.startswith("pts_time="):
-                        try:
-                            pts_times.append(float(tok.split("=", 1)[1]))
-                        except ValueError:
-                            pass
+        for token in stream.split():
+            for prefix in ("pts_time:", "pts_time="):
+                if token.startswith(prefix):
+                    try:
+                        times.append(round(offset + float(token[len(prefix):]), 2))
+                    except ValueError:
+                        pass
+    return sorted(set(times))
 
-    frames = sorted(out_dir.glob("frame_*.jpg"))
 
-    # Fallback: too few scene frames means this video is static-ish.
-    if len(frames) < uniform_fallback_min:
-        for f in frames:
-            f.unlink()
-        meta = get_metadata(video_path)
-        full_duration = meta["duration_seconds"]
-        eff_start = start_seconds if start_seconds is not None else 0.0
-        eff_end = end_seconds if end_seconds is not None else full_duration
-        eff_duration = max(0.1, eff_end - eff_start)
+def merge_bursts(times: list[float], min_gap: float = BURST_GAP_SECONDS) -> list[float]:
+    """Keep the first cut of each burst of cuts closer than `min_gap` seconds.
+
+    Animations and flashes trip the detector on consecutive frames; without
+    this, one transition can eat most of the frame budget.
+    """
+    merged: list[float] = []
+    for time in sorted(times):
+        if not merged or time - merged[-1] >= min_gap:
+            merged.append(time)
+    return merged
+
+
+def plan_frame_times(
+    scene_times: list[float],
+    duration: float,
+    max_frames: int,
+    anchors: tuple[float, ...] = (),
+    range_start: float = 0.0,
+) -> list[float]:
+    """Choose at most `max_frames` timestamps that cover the whole range.
+
+    The range opening and the `anchors` (e.g. chapter starts) are always kept.
+    The remaining budget goes to the first cut of each equal-length time
+    window, so a cut-dense opening cannot starve the rest of the video; any
+    budget left after that goes to the remaining cuts, evenly by index.
+    """
+    range_end = range_start + duration
+    fixed = spread_evenly(
+        sorted({round(range_start, 2), *(round(anchor, 2) for anchor in anchors)}), max_frames,
+    )
+    candidates = [
+        time for time in sorted(set(scene_times))
+        if range_start <= time < range_end and time not in fixed
+    ]
+    budget = max_frames - len(fixed)
+    if len(candidates) <= budget:
+        return sorted(fixed + candidates)
+
+    chosen: list[float] = []
+    if budget > 0:
+        window = max(duration, 1e-6) / budget
+        taken_windows: set[int] = set()
+        for time in candidates:
+            slot = min(budget - 1, int((time - range_start) / window))
+            if slot not in taken_windows:
+                taken_windows.add(slot)
+                chosen.append(time)
+
+    leftover = [time for time in candidates if time not in chosen]
+    chosen += spread_evenly(leftover, budget - len(chosen))
+    return sorted(set(fixed + chosen))
+
+
+def spread_evenly(items: list[float], count: int) -> list[float]:
+    """Pick `count` items evenly by index, always keeping the first and last.
+
+    Used whenever a list must be cut to a budget: keeping the first N would
+    silently drop the end of the video.
+    """
+    if count <= 0:
+        return []
+    if len(items) <= count:
+        return list(items)
+    if count == 1:
+        return [items[0]]
+    step = (len(items) - 1) / (count - 1)
+    return [items[round(idx * step)] for idx in range(count)]
+
+
+def extract_at(
+    video_path: str,
+    out_dir: Path,
+    times: list[float],
+    resolution: int = 512,
+    source: str = "scene-change",
+) -> list[dict]:
+    """Extract one JPEG per timestamp, named in chronological order."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for existing in out_dir.glob("frame_*.jpg"):
+        existing.unlink()
+
+    frames: list[dict] = []
+    for index, time in enumerate(sorted(times)):
+        target = out_dir / f"frame_{index + 1:04d}.jpg"
+        result = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{time:.3f}", "-i", str(Path(video_path).resolve()),
+                "-frames:v", "1", "-vf", f"scale={resolution}:-2", "-q:v", "4",
+                str(target),
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0 or not target.exists():
+            print(f"[watch] frame at {time:.2f}s failed: {result.stderr.strip()}", file=sys.stderr)
+            continue
+        frames.append({
+            "index": len(frames),
+            "timestamp_seconds": round(time, 2),
+            "path": str(target),
+            "source": source,
+        })
+    return frames
+
+
+PROBE_WIDTH, PROBE_HEIGHT = 64, 36
+PIXEL_DELTA = 24  # grey levels; smaller differences are compression noise
+CONTENT_SAMPLE_SECONDS = 2.0
+MIN_CONTENT_CHANGE = 0.05  # a screen counts as changed above 5% of its pixels
+
+
+def probe_gray_frames(
+    video_path: str,
+    every_seconds: float,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+) -> list[bytes]:
+    """Tiny greyscale samples (one every `every_seconds`) for cheap comparison."""
+    cmd: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    if start_seconds is not None:
+        cmd += ["-ss", f"{start_seconds:.3f}"]
+    if end_seconds is not None:
+        cmd += ["-to", f"{end_seconds:.3f}"]
+    cmd += [
+        "-i", str(Path(video_path).resolve()),
+        "-vf", f"fps=1/{every_seconds},scale={PROBE_WIDTH}:{PROBE_HEIGHT},format=gray",
+        "-f", "rawvideo", "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, check=False)
+    if result.returncode != 0:
+        raise SystemExit(f"ffmpeg probe failed: {result.stderr.decode(errors='replace').strip()}")
+    size = PROBE_WIDTH * PROBE_HEIGHT
+    raw = result.stdout
+    return [raw[offset:offset + size] for offset in range(0, len(raw) - size + 1, size)]
+
+
+def _changed_ratio(first: bytes, second: bytes) -> float:
+    changed = sum(1 for left, right in zip(first, second) if abs(left - right) > PIXEL_DELTA)
+    return changed / max(1, len(first))
+
+
+def pick_content_changes(
+    frames: list[bytes],
+    every_seconds: float,
+    changed_ratio: float,
+    anchors: tuple[float, ...] = (),
+    max_gap_seconds: float = float("inf"),
+    range_start: float = 0.0,
+) -> list[float]:
+    """Keep a sample when it differs enough from the last *kept* sample.
+
+    Comparing against the last kept screen (not the previous sample) lets
+    slow changes, like a terminal filling line by line, add up until they
+    count as a new screen. Anchors and `max_gap_seconds` force a screen so
+    no stretch of the video goes unseen.
+    """
+    kept: list[float] = []
+    reference: bytes | None = None
+    pending = sorted(anchors)
+    for index, frame in enumerate(frames):
+        time = round(range_start + index * every_seconds, 2)
+        anchor_reached = bool(pending) and time >= pending[0]
+        if anchor_reached:
+            pending = [anchor for anchor in pending if anchor > time]
+        gap_exceeded = bool(kept) and time - kept[-1] >= max_gap_seconds
+        if (reference is None or anchor_reached or gap_exceeded
+                or _changed_ratio(frame, reference) > changed_ratio):
+            kept.append(time)
+            reference = frame
+    return kept
+
+
+def plan_content_changes(
+    frames: list[bytes],
+    every_seconds: float,
+    max_frames: int,
+    anchors: tuple[float, ...] = (),
+    range_start: float = 0.0,
+) -> list[float]:
+    """Binary-search the change ratio so the kept screens fit `max_frames`.
+
+    Screencasts vary a lot in how much changes per minute, so a fixed ratio
+    either floods or starves the budget. The forced gap scales with the
+    budget, so it cannot overflow the budget on its own.
+    """
+    duration = len(frames) * every_seconds
+    max_gap = max(every_seconds, 2 * duration / max(1, max_frames))
+    low, high = 0.0, 1.0
+    best = pick_content_changes(frames, every_seconds, high, anchors, max_gap, range_start)
+    for _ in range(12):
+        middle = (low + high) / 2
+        kept = pick_content_changes(frames, every_seconds, middle, anchors, max_gap, range_start)
+        if len(kept) <= max_frames:
+            best, high = kept, middle
+        else:
+            low = middle
+    # Anchors plus forced gaps can exceed the budget even at the loosest
+    # ratio; spread the excess rather than dropping the end of the video.
+    return spread_evenly(best, max_frames)
+
+
+def extract_scene_change(
+    video_path: str,
+    out_dir: Path,
+    scene_threshold: float = SCENE_THRESHOLD,
+    resolution: int = 512,
+    max_frames: int = 100,
+    uniform_fallback_min: int = 10,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+    scene_times: list[float] | None = None,
+    anchors: tuple[float, ...] = (),
+) -> list[dict]:
+    """One frame per detected shot, spread over the whole range within budget.
+
+    Uses ffmpeg's `select='gt(scene,T)'` filter — scene change scores in [0,1],
+    higher = more visual difference between frames. 0.3 is a permissive cut
+    detector that catches hard cuts and most dissolves without firing on motion.
+
+    All cuts are detected first (pass `scene_times` to reuse a detection you
+    already ran), bursts are merged, and `plan_frame_times` picks at most
+    `max_frames` of them across the whole range plus the opening frame and
+    any `anchors`.
+
+    On `uniform_fallback_min`: screen recordings and long talking heads yield
+    very few scene changes. They fall back to content-change sampling (a new
+    frame whenever enough of the screen changed); a truly static video falls
+    back to uniform sampling — sparse frames > almost no frames.
+    """
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+
+    if scene_times is None:
+        scene_times = merge_bursts(detect_scene_times(
+            video_path, scene_threshold, start_seconds, end_seconds,
+        ))
+
+    meta = get_metadata(video_path)
+    eff_start = start_seconds if start_seconds is not None else 0.0
+    eff_end = end_seconds if end_seconds is not None else meta["duration_seconds"]
+    eff_duration = max(0.1, eff_end - eff_start)
+
+    in_range = tuple(anchor for anchor in anchors if eff_start <= anchor < eff_end)
+
+    # +1: the opening frame always counts as a shot.
+    if len(scene_times) + 1 < uniform_fallback_min:
+        # Screencasts barely cut: follow what changes on screen instead.
+        every = min(CONTENT_SAMPLE_SECONDS, max(0.5, eff_duration / (max_frames * 4)))
+        probes = probe_gray_frames(video_path, every, start_seconds, end_seconds)
+        if len(pick_content_changes(probes, every, MIN_CONTENT_CHANGE)) > 1:
+            times = plan_content_changes(
+                probes, every, max_frames, anchors=in_range, range_start=eff_start,
+            )
+            return extract_at(video_path, out_dir, times, resolution, source="content-change")
+        out_dir.mkdir(parents=True, exist_ok=True)
         fps, _ = auto_fps(eff_duration, max_frames=max_frames)
         return extract(
             video_path, out_dir,
@@ -276,19 +494,10 @@ def extract_scene_change(
             start_seconds=start_seconds, end_seconds=end_seconds,
         )
 
-    offset = start_seconds or 0.0
-    if len(pts_times) < len(frames):
-        pts_times += [0.0] * (len(frames) - len(pts_times))
-
-    return [
-        {
-            "index": i,
-            "timestamp_seconds": round(offset + pts_times[i], 2),
-            "path": str(p),
-            "source": "scene-change",
-        }
-        for i, p in enumerate(frames)
-    ]
+    times = plan_frame_times(
+        scene_times, eff_duration, max_frames, anchors=in_range, range_start=eff_start,
+    )
+    return extract_at(video_path, out_dir, times, resolution=resolution)
 
 
 def select_hero_frames(
