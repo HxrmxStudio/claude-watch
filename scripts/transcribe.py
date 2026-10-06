@@ -39,8 +39,10 @@ def parse_vtt(path: str) -> list[dict]:
         i += 1
 
         # YouTube auto-captions open some cues with a whitespace-only
-        # placeholder line; it is part of the cue, not its terminator.
-        if i < len(lines) and lines[i] and not lines[i].strip():
+        # placeholder line followed by the cue text. A whitespace-only line
+        # with no text after it is just a separator and ends the cue.
+        if (i + 1 < len(lines) and lines[i] and not lines[i].strip()
+                and lines[i + 1].strip() and not _starts_next_cue(lines, i + 1)):
             i += 1
 
         cue_lines: list[str] = []
@@ -56,7 +58,9 @@ def parse_vtt(path: str) -> list[dict]:
         cue_text = " ".join(new_lines).strip()
         if cue_text:
             segments.append({"start": round(start, 2), "end": round(end, 2), "text": cue_text})
-        i += 1
+        # Step over the separator, but never over the next cue's timing line.
+        if i < len(lines) and not TS_RE.match(lines[i]):
+            i += 1
 
     return _dedupe(segments)
 
