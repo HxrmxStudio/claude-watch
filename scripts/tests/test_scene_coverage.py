@@ -40,6 +40,13 @@ class TestDropRepeatedShots(unittest.TestCase):
             [0.0, 4.0, 8.0],
         )
 
+    def test_judges_the_shot_after_its_fade_settles(self):
+        # A, B, then a fade back to A: mid-fade the cut looks new, settled it is A.
+        probes = _probes((50, 10), (200, 10), (170, 1), (140, 1), (110, 1), (80, 1), (50, 16))
+        self.assertEqual(
+            drop_repeated_shots([5.0, 10.0], probes, every_seconds=0.5, keep=(0.0,)), [0.0, 5.0],
+        )
+
     def test_keeps_shots_that_differ(self):
         probes = _probes((50, 8), (200, 8), (120, 8))
         self.assertEqual(

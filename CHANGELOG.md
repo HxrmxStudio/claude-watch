@@ -11,7 +11,7 @@ All notable changes to `/watch` are documented here.
 - A failed shot probe falls back to plain cuts instead of aborting.
 - Frames are tiled into contact sheets (20 per sheet, timestamps listed in cell order); the skill reads the sheets first and single frames only for detail.
 
-Measured on three 11-14 min videos (a talk with slides, a UI redesign walkthrough, a UX psychology explainer): frames used went from 80/44/50 to 80/80/80 of an 80 budget, and the longest stretch with no frame from 92/66/57 s to 46/35/40 s.
+Measured on three 11-14 min videos (a talk with slides, a UI redesign walkthrough, a UX psychology explainer): frames used went from 80/44/50 to 80/80/80 of an 80 budget, and the longest stretch with no frame from 92/66/57 s to 46/37/42 s.
 
 ## [0.2.0+hxrmx.6] — 2026-10-06 (fork: HxrmxStudio/claude-watch)
 
