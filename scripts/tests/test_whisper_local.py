@@ -66,6 +66,20 @@ class TestTranscribeLocal(unittest.TestCase):
         self.assertEqual(words, [])
 
 
+    def test_unreadable_json_becomes_system_exit(self):
+        # Callers only catch SystemExit; any other error would abort /watch
+        # instead of falling back to frames-only.
+        def fake_run(cmd, **_kwargs):
+            if cmd[0] == whisper.LOCAL_BINARY:
+                output_base = cmd[cmd.index("-of") + 1]
+                Path(output_base + ".json").write_bytes(b'{"transcription": [\xff\xfe')
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with mock.patch.object(whisper.subprocess, "run", side_effect=fake_run), \
+                self.assertRaises(SystemExit):
+            whisper._transcribe_local(self.audio, "model.bin")
+
+
 class TestLocalBackendDetection(unittest.TestCase):
 
     def setUp(self):

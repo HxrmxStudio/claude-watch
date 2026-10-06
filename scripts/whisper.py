@@ -344,7 +344,10 @@ def _transcribe_local(
     if result.returncode != 0 or not json_path.exists():
         raise SystemExit(f"whisper.cpp failed (exit {result.returncode}): {result.stderr.strip()[-400:]}")
 
-    data = json.loads(json_path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8", errors="replace"))
+    except ValueError as exc:
+        raise SystemExit(f"whisper.cpp returned unreadable JSON: {exc}") from exc
     segments = _segments_from_whisper_cpp(data)
     words = _words_from_whisper_cpp(data) if word_timestamps else []
     return segments, words
