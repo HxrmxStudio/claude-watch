@@ -141,10 +141,7 @@ def main() -> int:
             scene_times=all_scene_times,
             anchors=chapter_starts,
         )
-        sampling_mode = (
-            "scene-change" if frames and frames[0].get("source") == "scene-change"
-            else "uniform-fallback"
-        )
+        sampling_mode = (frames[0].get("source") if frames else None) or "uniform-fallback"
     else:
         frames = extract(
             video_path,
@@ -254,7 +251,11 @@ def main() -> int:
     if meta.get("width") and meta.get("height"):
         print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
     mode = "focused" if focused else "full"
-    print(f"- **Frames:** {len(frames)} @ {fps:.3f} fps, {mode} mode (budget {target}, max {max_frames})")
+    rate = f" @ {fps:.3f} fps" if sampling_mode.startswith("uniform") else ""
+    print(
+        f"- **Frames:** {len(frames)} via {sampling_mode}{rate}, {mode} mode "
+        f"(budget {target}, max {max_frames})"
+    )
     print(f"- **Frame size:** {args.resolution}px wide")
     if transcript_segments:
         in_range = " in range" if focused else ""
