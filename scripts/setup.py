@@ -26,6 +26,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from whisper import DEFAULT_LOCAL_MODEL, local_model_path  # noqa: E402
+
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
@@ -41,8 +45,13 @@ ENV_TEMPLATE = """# /watch API configuration
 # Get a Groq key:  https://console.groq.com/keys
 # Get an OpenAI key:  https://platform.openai.com/api-keys
 #
-# Leave both blank to disable Whisper — /watch will still work, but videos
-# without native captions will come back frames-only.
+# No key? Local whisper.cpp works too, fully on-device: install `whisper-cli`
+# (brew install whisper-cpp) and put a model at the default path below, or
+# point WHISPER_CPP_MODEL at one.
+#   ~/.local/share/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin
+#
+# With no key and no local model, /watch still works, but videos without
+# native captions will come back frames-only.
 
 GROQ_API_KEY=
 OPENAI_API_KEY=
@@ -96,10 +105,13 @@ def _read_env_key(name: str) -> str | None:
 
 
 def _have_api_key() -> tuple[bool, str | None]:
+    """True when some Whisper backend is usable: a cloud key or local whisper.cpp."""
     if _read_env_key("GROQ_API_KEY"):
         return True, "groq"
     if _read_env_key("OPENAI_API_KEY"):
         return True, "openai"
+    if local_model_path():
+        return True, "local"
     return False, None
 
 
@@ -238,7 +250,7 @@ def cmd_check() -> int:
     if s["missing_binaries"]:
         parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
     if not s["has_api_key"]:
-        parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
+        parts.append("no Whisper backend (GROQ_API_KEY, OPENAI_API_KEY or local whisper.cpp)")
     installer = Path(__file__).resolve()
     sys.stderr.write(
         f"[watch] setup incomplete ({'; '.join(parts)}). "
@@ -308,7 +320,12 @@ def cmd_install() -> int:
     print("    GROQ_API_KEY=...    (preferred — cheaper, faster; get one at console.groq.com/keys)")
     print("    OPENAI_API_KEY=...  (fallback; get one at platform.openai.com/api-keys)")
     print("")
-    print("  Without a key, /watch still works but videos without captions come back frames-only.")
+    print("  Or transcribe on-device with whisper.cpp (no key, audio stays local):")
+    print("    brew install whisper-cpp")
+    print(f"    model: {DEFAULT_LOCAL_MODEL}")
+    print("    from: https://huggingface.co/ggerganov/whisper.cpp (ggml-large-v3-turbo-q5_0.bin)")
+    print("")
+    print("  Without any backend, /watch still works but videos without captions come back frames-only.")
     return 3
 
 

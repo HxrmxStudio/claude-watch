@@ -141,6 +141,7 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 | Download + native captions | `yt-dlp` + `ffmpeg` | Free |
 | Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
 | Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
+| Whisper fallback (on-device) | `whisper-cli` ([whisper.cpp](https://github.com/ggml-org/whisper.cpp), `brew install whisper-cpp`) + a model at `~/.local/share/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin` (or `WHISPER_CPP_MODEL`) | Free, audio never leaves the machine; ~5x realtime on Apple Silicon |
 | Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
 
 ## Usage

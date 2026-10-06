@@ -32,50 +32,72 @@ OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
 
 
-def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
-    """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
+LOCAL_BINARY = "whisper-cli"
+DEFAULT_LOCAL_MODEL = (
+    Path.home() / ".local" / "share" / "whisper.cpp" / "models" / "ggml-large-v3-turbo-q5_0.bin"
+)
 
-    If `preferred` is "groq" or "openai", only that backend's key is considered.
-    """
-    def _from_env(name: str) -> str | None:
-        value = os.environ.get(name)
-        return value.strip() if value else None
 
-    def _from_dotenv(path: Path, name: str) -> str | None:
-        if not path.exists():
-            return None
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                if key.strip() != name:
-                    continue
-                value = value.strip()
-                if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
-                    value = value[1:-1]
-                return value or None
-        except OSError:
-            return None
+def _dotenv_paths() -> list[Path]:
+    return [Path.home() / ".config" / "watch" / ".env", Path.cwd() / ".env"]
+
+
+def _from_dotenv(path: Path, name: str) -> str | None:
+    if not path.exists():
         return None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() != name:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
+                value = value[1:-1]
+            return value or None
+    except OSError:
+        return None
+    return None
 
-    dotenv_paths = [
-        Path.home() / ".config" / "watch" / ".env",
-        Path.cwd() / ".env",
-    ]
 
-    candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
+def _read_setting(name: str) -> str | None:
+    """Environment first, then ~/.config/watch/.env, then ./.env."""
+    value = os.environ.get(name)
+    if value and value.strip():
+        return value.strip()
+    for candidate in _dotenv_paths():
+        value = _from_dotenv(candidate, name)
+        if value:
+            return value
+    return None
+
+
+def local_model_path() -> str | None:
+    """whisper.cpp model to use, when both the binary and the model exist.
+
+    WHISPER_CPP_MODEL overrides the default model location.
+    """
+    if shutil.which(LOCAL_BINARY) is None:
+        return None
+    model = Path(_read_setting("WHISPER_CPP_MODEL") or DEFAULT_LOCAL_MODEL).expanduser()
+    return str(model) if model.is_file() else None
+
+
+def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
+    """Return (backend, credential): Groq, then OpenAI, then local whisper.cpp.
+
+    For the cloud backends the credential is the API key; for "local" it is
+    the whisper.cpp model path, so audio never leaves the machine. If
+    `preferred` names a backend, only that one is considered.
+    """
+    candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"), (None, "local"))
     if preferred is not None:
         candidates = tuple(c for c in candidates if c[1] == preferred)
 
     for key_name, backend in candidates:
-        value = _from_env(key_name)
-        if not value:
-            for candidate in dotenv_paths:
-                value = _from_dotenv(candidate, key_name)
-                if value:
-                    break
+        value = local_model_path() if key_name is None else _read_setting(key_name)
         if value:
             return backend, value
 
@@ -272,6 +294,65 @@ def _segments_from_response(data: dict) -> list[dict]:
     return out
 
 
+def _segments_from_whisper_cpp(data: dict) -> list[dict]:
+    """Convert `whisper-cli -oj` output (millisecond offsets) to our segment shape."""
+    out: list[dict] = []
+    for item in data.get("transcription") or []:
+        text = (item.get("text") or "").strip()
+        if not text:
+            continue
+        offsets = item.get("offsets") or {}
+        out.append({
+            "start": round(float(offsets.get("from") or 0) / 1000, 2),
+            "end": round(float(offsets.get("to") or 0) / 1000, 2),
+            "text": text,
+        })
+    return out
+
+
+def _words_from_whisper_cpp(data: dict) -> list[dict]:
+    """Word entries from a `--max-len 1 --split-on-word` run (one word per item)."""
+    return [
+        {"word": segment["text"], "start": segment["start"], "end": segment["end"]}
+        for segment in _segments_from_whisper_cpp(data)
+    ]
+
+
+def _transcribe_local(
+    audio_path: Path, model: str, word_timestamps: bool = False,
+) -> tuple[list[dict], list[dict]]:
+    """Run whisper.cpp on-device. Returns (segments, words); audio stays local."""
+    wav_path = audio_path.with_name(f"{audio_path.stem}-16k.wav")
+    convert = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-i", str(audio_path.resolve()), "-ac", "1", "-ar", "16000", str(wav_path.resolve())],
+        capture_output=True, text=True, check=False,
+    )
+    if convert.returncode != 0:
+        raise SystemExit(f"ffmpeg wav conversion failed: {convert.stderr.strip()}")
+
+    # whisper-cli appends ".json" to the -of value verbatim.
+    output_base = str(wav_path.with_suffix("").resolve())
+    cmd = [
+        LOCAL_BINARY, "-m", model, "-f", str(wav_path.resolve()),
+        "-l", "auto", "-oj", "-of", output_base, "-np",
+    ]
+    if word_timestamps:
+        cmd += ["-ml", "1", "-sow"]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    json_path = Path(output_base + ".json")
+    if result.returncode != 0 or not json_path.exists():
+        raise SystemExit(f"whisper.cpp failed (exit {result.returncode}): {result.stderr.strip()[-400:]}")
+
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8", errors="replace"))
+    except ValueError as exc:
+        raise SystemExit(f"whisper.cpp returned unreadable JSON: {exc}") from exc
+    segments = _segments_from_whisper_cpp(data)
+    words = _words_from_whisper_cpp(data) if word_timestamps else []
+    return segments, words
+
+
 def transcribe_video(
     video_path: str,
     audio_out: Path,
@@ -290,14 +371,23 @@ def transcribe_video(
     if not backend or not api_key:
         setup_py = Path(__file__).resolve().parent / "setup.py"
         raise SystemExit(
-            "No Whisper API key available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
-            "in the environment or in ~/.config/watch/.env. "
+            "No Whisper backend available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
+            "in the environment or in ~/.config/watch/.env, or install whisper.cpp "
+            f"(`whisper-cli`) with a model at {DEFAULT_LOCAL_MODEL} (or WHISPER_CPP_MODEL). "
             f"Run `python3 {setup_py}` to configure."
         )
 
     print(f"[watch] extracting audio for Whisper ({backend})…", file=sys.stderr)
     audio_path = extract_audio(video_path, audio_out)
     size_kb = audio_path.stat().st_size / 1024
+    if backend == "local":
+        print(f"[watch] audio: {size_kb:.0f} kB — transcribing on-device (whisper.cpp)…", file=sys.stderr)
+        segments, _ = _transcribe_local(audio_path, api_key)
+        if not segments:
+            raise SystemExit("Whisper returned no transcript segments")
+        print(f"[watch] transcribed {len(segments)} segments via local", file=sys.stderr)
+        return segments, backend
+
     print(f"[watch] audio: {size_kb:.0f} kB — uploading to {backend} Whisper…", file=sys.stderr)
 
     if backend == "groq":
@@ -333,6 +423,10 @@ def transcribe_audio(
     if not backend or not api_key:
         raise SystemExit("No Whisper API key available for transcribe_audio()")
 
+    if backend == "local":
+        segments, words = _transcribe_local(audio_path, api_key, word_timestamps=word_timestamps)
+        return segments, backend, words
+
     if backend == "groq":
         endpoint, model = GROQ_ENDPOINT, GROQ_MODEL
     elif backend == "openai":
@@ -361,7 +455,7 @@ def transcribe_audio(
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai]", file=sys.stderr)
+        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai|local]", file=sys.stderr)
         raise SystemExit(2)
 
     video = sys.argv[1]
