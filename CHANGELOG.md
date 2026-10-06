@@ -2,6 +2,17 @@
 
 All notable changes to `/watch` are documented here.
 
+## [0.2.0+hxrmx.7] — 2026-10-06 (fork: HxrmxStudio/claude-watch)
+
+### Changed
+- Scene-change sampling drops cuts that return to a framing already kept (a talking head between slides), compared on small colour samples so screens of equal brightness but different hue stay apart. Only cuts are deduplicated: successive edits of one screen in a UI walkthrough are the content.
+- Long stretches with no cut get a frame when the screen changes (cross-faded slides, screen shares, UI edits). The change required starts at 20% of the screen and is lowered while the result fits the budget, and each stretch gets at most its fair share, so animations cannot flood it.
+- Frames land after transitions: cuts and fillers wait for a fade or slide-in to settle (up to 2 s) instead of catching the blend.
+- A failed shot probe falls back to plain cuts instead of aborting.
+- Frames are tiled into contact sheets (20 per sheet, timestamps listed in cell order); the skill reads the sheets first and single frames only for detail.
+
+Measured on three 11-14 min videos (a talk with slides, a UI redesign walkthrough, a UX psychology explainer): frames used went from 80/44/50 to 80/80/80 of an 80 budget, and the longest stretch with no frame from 92/66/57 s to 46/35/40 s.
+
 ## [0.2.0+hxrmx.6] — 2026-10-06 (fork: HxrmxStudio/claude-watch)
 
 Fixes and features proposed upstream as separate PRs; this fork carries them until they land.

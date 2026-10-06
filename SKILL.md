@@ -16,7 +16,7 @@ You don't have a video input; this skill gives you one. A Python script download
 
 ## What v2 does differently
 
-- **Scene-change frame sampling** — one frame per detected shot instead of uniform ticks. Cuts the frame budget on long videos while capturing every transition.
+- **Scene-change frame sampling** — one frame per detected shot instead of uniform ticks, skipping shots that repeat a framing already seen and adding a frame when the screen changes inside a long uncut shot. Frames are tiled into contact sheets so a whole video reads in a few images.
 - **Editorial pacing metrics** — cuts/min, mean shot length, motion (when available). Lets you reason about pacing the way an editor does.
 - **Hook microscope** — first 10s auto-runs at 2 fps + word-level Whisper. The single most leveraged 10 seconds of any video deserves dense treatment.
 - **Structured `report.md`** — every watch emits an ingest-shaped report at `<workdir>/report.md` with TL;DR, key moments, hook breakdown, editorial profile, quotable moments, entities, concepts, and transcript. Narrative sections are emitted as `<!-- pending Claude fill: ... -->` markers — you fill them in before offering ingest.
@@ -150,7 +150,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" "$URL" --start 2:15 --end 2:45 --
 python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 ```
 
-**Step 3 — Read every frame path the script lists.** The Read tool renders JPEGs directly as images for you. Read all frames in a single message (parallel tool calls) so you see them together. The frames are in chronological order with a `t=MM:SS` timestamp so you can align them to the transcript.
+**Step 3 — Read the contact sheets, then zoom in where needed.** The script tiles the frames into a few contact sheets (`## Contact sheets`, 20 frames each, 4 per row, left to right then top to bottom, with the timestamps of each cell listed in that order). Read every sheet in a single message (parallel tool calls) so you see the whole video at once and can align it to the transcript. Then Read individual frames only where a cell is too small to make out on-screen text or detail you need. If the output has no contact sheets, Read every frame path instead; frames are in chronological order with a `t=MM:SS` timestamp.
 
 **Step 4 — answer the user, then fill the report.** You now have three streams of evidence:
 - **Frames** — what's on screen at each timestamp
