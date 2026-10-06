@@ -1,6 +1,6 @@
 {
   "name": "watch",
-  "version": "0.2.0+hxrmx.4",
+  "version": "0.2.0+hxrmx.5",
   "description": "Let Claude watch a video. Downloads with yt-dlp, extracts scene-change frames with ffmpeg, runs a dense 0-10s hook microscope, pulls captions or falls back to Whisper, emits a structured report.md, and (optionally) auto-saves into your Obsidian vault.",
   "author": {
     "name": "taoufik"
