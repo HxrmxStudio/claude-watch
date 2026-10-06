@@ -2,6 +2,21 @@
 
 All notable changes to `/watch` are documented here.
 
+## [0.2.0+hxrmx.1] — 2026-10-06 (fork: HxrmxStudio/claude-watch)
+
+Fixes and features proposed upstream as separate PRs; this fork carries them until they land.
+
+### Fixed
+- Scene-change sampling kept only the first `max_frames` cuts, silently dropping the end of long edited videos (a 12 min video lost its last 3 minutes). All cuts are detected first, bursts under 1s merged, and the budget spread over time with chapter starts as anchors. Pacing now counts every cut.
+- Caption selection preferred auto tracks over manual ones by file name; manual tracks now come from `info.json`, then the original-language `-orig` auto track.
+- Rolling YouTube auto-captions doubled the transcript; the rolled-over line is dropped, and the first cue is no longer lost.
+- A failed download names a stale yt-dlp (over 60 days) and how to update it.
+
+### Added
+- Content-change sampling for screencasts, which rarely cut: a frame when enough of the screen changed since the last kept one, fitted to the budget.
+- On-device Whisper backend via whisper.cpp (`--whisper local`), used when no API key is set.
+- Original-language auto captions (`.*-orig`) for non-English videos.
+
 ## [0.2.0] — 2026-05-25
 
 Based on [bradautomates/claude-video](https://github.com/bradautomates/claude-video) v0.1.3 by Bradley Bonanno (MIT). Its pipeline (yt-dlp + ffmpeg + Whisper) is preserved; everything below is additive.
