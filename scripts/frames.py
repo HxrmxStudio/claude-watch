@@ -428,7 +428,9 @@ def plan_content_changes(
             best, high = kept, middle
         else:
             low = middle
-    return best[:max_frames]
+    # Anchors plus forced gaps can exceed the budget even at the loosest
+    # ratio; spread the excess rather than dropping the end of the video.
+    return spread_evenly(best, max_frames)
 
 
 def extract_scene_change(

@@ -9,7 +9,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from frames import extract_scene_change, pick_content_changes  # noqa: E402
+from frames import extract_scene_change, pick_content_changes, plan_content_changes  # noqa: E402
 
 PIXELS = 100
 
@@ -42,6 +42,19 @@ class TestPickContentChanges(unittest.TestCase):
             anchors=(3.0,), max_gap_seconds=4.0,
         )
         self.assertEqual(times, [0.0, 3.0, 7.0])
+
+
+class TestPlanContentChanges(unittest.TestCase):
+
+    def test_dense_chapters_do_not_truncate_the_end(self):
+        # 300 samples of a static screen (600 s), 30 chapter anchors and a
+        # budget of 20: forced frames exceed the budget, and the plan must
+        # still reach the end of the video instead of keeping the first 20.
+        frames = [_frame(0)] * 300
+        anchors = tuple(float(idx * 20) for idx in range(30))
+        times = plan_content_changes(frames, every_seconds=2.0, max_frames=20, anchors=anchors)
+        self.assertLessEqual(len(times), 20)
+        self.assertGreaterEqual(times[-1], 560.0)
 
 
 def _screencast(out: Path, positions: int = 8, seconds_each: int = 2) -> Path:
