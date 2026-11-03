@@ -231,6 +231,20 @@ The script gets a timestamped transcript in one of two ways:
 
 Keys and `WHISPER_CPP_MODEL` live in `~/.config/watch/.env`. The script tries Groq, then OpenAI, then local; force one with `--whisper groq|openai|local`. Use `--no-whisper` to skip the fallback entirely.
 
+## Sound beyond the words
+
+The transcript carries what is said, not how the film sounds. When the intent is about sound (music, sound effects,
+the mix, where a hit lands against a cut), listen to the downloaded video in the working directory with earshot, if
+`~/.claude/skills/motion-video/toolkit/listen.py` exists and earshot is installed (it exits 2 and says so otherwise):
+
+- `python ~/.claude/skills/motion-video/toolkit/listen.py measure <video>`: loudness, true peak, LRA, clipping, tempo
+  and key with `--music` (no models, seconds).
+- `HEAVY_WAIT=900 heavy python ~/.claude/skills/motion-video/toolkit/listen.py sheet <video> -o <workdir>/sound_sheet.png --detail low`:
+  frames, spectrogram, labelled events and sync to the picture cuts in one PNG; `Read` it like a frame.
+
+Everything runs locally and offline; nothing is uploaded. Its event labels are hints, and it does not judge taste,
+emotion or speech: say what was measured and what the user should listen to.
+
 ## Failure modes and handling
 
 - **Setup preflight failed** → run `python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py"` (auto-installs ffmpeg/yt-dlp via brew on macOS, scaffolds the `.env`). For API key, ask the user via `AskUserQuestion` and write it to `~/.config/watch/.env`.
